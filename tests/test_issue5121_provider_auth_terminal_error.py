@@ -133,7 +133,7 @@ def _auth_failure_error_payload():
     }
 
 
-def _build_auth_failure_agent(*, token_text: str, success_text: str = "Recovered auth reply"):
+def _build_auth_failure_agent(*, token_text: str | None, success_text: str = "Recovered auth reply"):
     class AuthFailureAgent(MockAgent):
         runs = 0
 
@@ -141,7 +141,7 @@ def _build_auth_failure_agent(*, token_text: str, success_text: str = "Recovered
             type(self).runs += 1
             history = list(kwargs.get("conversation_history") or [])
             if type(self).runs == 1:
-                if self.stream_delta_callback is not None:
+                if self.stream_delta_callback is not None and token_text is not None:
                     self.stream_delta_callback(token_text)
                 return {
                     "messages": history,
@@ -178,7 +178,7 @@ def _run_stream(monkeypatch, session, stream_id, agent_cls, *, workspace):
 
 def test_auth_401_without_delivery_persists_error_turn(tmp_path, monkeypatch):
     session = _prepare_session("auth_no_delivery", "stream_auth_no_delivery", pending_user_message="Please respond")
-    agent_cls = _build_auth_failure_agent(token_text="")
+    agent_cls = _build_auth_failure_agent(token_text=None)
 
     fake_queue = _run_stream(monkeypatch, session, "stream_auth_no_delivery", agent_cls, workspace=str(tmp_path))
     saved = Session.load("auth_no_delivery")
@@ -280,4 +280,31 @@ def test_non_auth_silent_failure_still_uses_no_response(tmp_path, monkeypatch):
     assert apperrors, "expected apperror for silent failure"
     assert apperrors[-1]["type"] == "no_response"
     assert apperrors[-1]["type"] != "auth_mismatch"
+    assert saved.messages[-1]["_error"] is True
+
+
+def test_non_auth_partial_delivery_persists_error_turn(tmp_path, monkeypatch):
+    session = _prepare_session("partial_escape", "stream_partial_escape", pending_user_message="Please handle partial silence")
+
+    class PartialSilentFailureAgent(MockAgent):
+        def run_conversation(self, **kwargs):
+            if self.stream_delta_callback is not None:
+                self.stream_delta_callback("Partial text before failure")
+            return {
+                "messages": list(kwargs.get("conversation_history") or []),
+                "error": "",
+            }
+
+    fake_queue = _run_stream(monkeypatch, session, "stream_partial_escape", PartialSilentFailureAgent, workspace=str(tmp_path))
+    saved = Session.load("partial_escape")
+    assert saved is not None
+
+    partial = next((msg for msg in saved.messages if msg.get("_partial")), None)
+    assert partial is not None
+    assert partial["content"] == "Partial text before failure"
+
+    events = _queue_events(fake_queue)
+    apperrors = [data for event, data in events if event == "apperror"]
+    assert apperrors, "expected apperror for partial silent failure"
+    assert apperrors[-1]["type"] == "no_response"
     assert saved.messages[-1]["_error"] is True

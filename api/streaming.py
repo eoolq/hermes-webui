@@ -8053,16 +8053,8 @@ def _run_agent_streaming(
                 _terminal_failure = (
                     _agent_result_terminal_failure(result)
                     or (
-                        _is_auth
-                        and _saved_transcript_lacks_final_answer
-                    )
-                    or (
-                        _tool_limit_reached
-                        and _session_lacks_final_assistant_answer(_all_result_messages)
-                    )
-                    or (
-                        not _token_sent
-                        and _session_lacks_final_assistant_answer(_all_result_messages)
+                        _saved_transcript_lacks_final_answer
+                        and _classification['type'] not in {'cancelled', 'interrupted'}
                     )
                 )
                 if _terminal_failure:
