@@ -3339,6 +3339,27 @@ def resolve_model_reasoning_efforts(
             provider = str((cfg.get("model") or {}).get("provider") or "").strip().lower()
 
     provider = _resolve_provider_alias(provider)
+
+    # 0. Provider config: providers.<name>.reasoning_efforts
+    # When the user has explicitly listed valid efforts for a provider,
+    # return that list directly — no heuristics, no models.dev lookup.
+    # Handles both custom:<name> and bare registered provider names (e.g. wandb).
+    _prov_name = None
+    if provider and provider.startswith("custom:"):
+        _prov_name = provider.split(":", 1)[1]
+    elif provider:
+        _prov_name = provider
+    if _prov_name:
+        try:
+            _prov_entry = (cfg.get("providers") or {}).get(_prov_name, {})
+            if isinstance(_prov_entry, dict):
+                _re_list = _prov_entry.get("reasoning_efforts")
+                if isinstance(_re_list, list) and _re_list:
+                    return [str(x).strip().lower() for x in _re_list
+                            if str(x).strip().lower() in {*VALID_REASONING_EFFORTS, "none"}]
+        except Exception:
+            pass
+
     if provider in {"cursor-acp", "copilot-acp"}:
         return []
 
