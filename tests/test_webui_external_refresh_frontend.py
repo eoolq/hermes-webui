@@ -185,7 +185,7 @@ def test_session_list_render_signature_does_not_skip_recovering_from_skeleton_or
     """
     start = SESSIONS_JS.find("function _applySessionListPayload(")
     assert start != -1
-    body = SESSIONS_JS[start:start + 6000]
+    body = SESSIONS_JS[start:start + 12000]
     assert "const _hadSessionListSkeleton = _sessionListSkeletonActive;" in body
     assert "const _hadSessionListLoadError = !!_sessionListLoadError;" in body
     assert "const _mustForceRender = _hadSessionListSkeleton || _hadSessionListLoadError;" in body
