@@ -86,6 +86,7 @@ let _streamFadeAppendOffset=0;
 let _streamFadeVisibleWords=0;
 let _streamFadeHoldUntilMs=0;
 let _streamFadeCurrentMs=200;
+let _streamFadeDomText='';
 const _STREAM_FADE_MS=200;
 const _STREAM_FADE_MAX_MS=350;
 const _STREAM_FADE_STAGGER_MS=16;
@@ -166,12 +167,24 @@ def test_stream_fade_uses_incremental_renderer_without_changing_default_path():
         [
             "_streamFadeNextText(displayText)",
             "if(!next.changed) return next.caughtUp",
-            "_smdNewParser(assistantBody,true)",
-            "_smdWrite(next.text,true)",
+            "_streamFadeBindCleanup(assistantBody)",
+            "_streamFadeAppendText(assistantBody,delta)",
+            "_streamFadeDomText=String(next.text||'')",
             "stream-fade-active",
         ],
     )
-    assert "renderMd ? renderMd(next.text||'')" in render_block
+    assert "_smdWrite(next.text,true)" not in render_block
+    assert "innerHTML" not in render_block
+    append_block = function_block(MESSAGES_JS, "_streamFadeAppendText")
+    assert_contains_all(
+        append_block,
+        [
+            "document.createDocumentFragment()",
+            "span.className='stream-fade-word is-new'",
+            "el.appendChild(frag)",
+            "_streamFadeLatestAnimationEndAt",
+        ],
+    )
     assert_contains_all(
         renderer_block,
         [
@@ -189,6 +202,57 @@ def test_stream_fade_uses_incremental_renderer_without_changing_default_path():
         ["animationend", "span.replaceWith(document.createTextNode"],
     )
     assert "_wrapStreamingFadeWords" not in MESSAGES_JS
+
+
+def test_stream_fade_appends_new_spans_without_replacing_existing_nodes():
+    script = (
+        function_block(MESSAGES_JS, "_streamFadeAppendText")
+        + r"""
+const _STREAM_FADE_MS=200;
+const _STREAM_FADE_STAGGER_MS=16;
+let _streamFadeAppendOffset=0;
+let _streamFadeLatestAnimationEndAt=0;
+let _streamFadeCurrentMs=200;
+const performance={_t:0,now(){return this._t;}};
+function _streamFadeReduceMotionEnabled(){ return false; }
+class FakeNode{
+  constructor(type,text=''){
+    this.type=type;
+    this.children=[];
+    this.className='';
+    this.textContent=text;
+    this.style={values:{},setProperty:(name,value)=>{this.style.values[name]=value;}};
+  }
+  appendChild(child){
+    if(child&&child.type==='fragment'){
+      child.children.forEach(n=>this.children.push(n));
+    }else{
+      this.children.push(child);
+    }
+    return child;
+  }
+}
+global.document={
+  createDocumentFragment(){ return new FakeNode('fragment'); },
+  createTextNode(text){ return new FakeNode('text',String(text)); },
+  createElement(tag){ const node=new FakeNode(tag); node.tagName=String(tag).toUpperCase(); return node; },
+};
+const body=new FakeNode('div');
+_streamFadeAppendText(body,'alpha beta ');
+const firstSpan=body.children.find(node=>node.className==='stream-fade-word is-new');
+if(!firstSpan) throw new Error('missing first fade span');
+_streamFadeAppendText(body,'gamma');
+if(body.children.find(node=>node.className==='stream-fade-word is-new')!==firstSpan){
+  throw new Error('first span was replaced');
+}
+const spans=body.children.filter(node=>node.className==='stream-fade-word is-new');
+if(spans.length!==3) throw new Error(`expected three animated spans, got ${spans.length}`);
+if(spans.map(node=>node.textContent).join('|')!=='alpha|beta|gamma'){
+  throw new Error(`wrong span text: ${spans.map(node=>node.textContent).join('|')}`);
+}
+"""
+    )
+    run_node(script)
 
 
 def test_transparent_anchor_prose_uses_fade_renderer_when_enabled():
