@@ -65,8 +65,10 @@ def test_autoresize_calls_the_repin():
     body = MESSAGES_JS[start:end]
     # The height write must still be there...
     assert "el.style.height=Math.min(el.scrollHeight,200)+'px'" in body
-    # ...and the re-pin must be called after it.
+    # ...and the re-pin must be called after it, guarded so it only fires when the
+    # composer actually grew (skips the DOM read on a no-height-change keystroke).
     assert "_repinMessagesAfterComposerResize()" in body
+    assert "el.offsetHeight>_prevComposerH" in body
 
 
 def test_resize_observer_installed_on_composer():
