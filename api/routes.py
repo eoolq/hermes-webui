@@ -11759,7 +11759,7 @@ def handle_get(handler, parsed) -> bool:
         # RequestDiagnostics. maybe_start() returns None for paths not in
         # the allowlist, in which case the existing _tN-driven [SLOW] log
         # is the only signal — same as before.
-        _diag = RequestDiagnostics.maybe_start("GET", parsed.path, logger=logger)
+        _diag = RequestDiagnostics.maybe_start("GET", parsed.path, logger=logger, print_fn=getattr(handler, '_safe_webui_print', None))
         query = parse_qs(parsed.query)
         sid = query.get("session_id", [""])[0]
         if not sid:
@@ -12130,12 +12130,22 @@ def handle_get(handler, parsed) -> bool:
             # to diagnose latency regressions. Opt-in env var still forces
             # logging on every request for development.
             if _debug_slow or _total_ms >= 2000:
-                logger.warning(
+                # perf(webui/session-load-latency) tier2c: route the [SLOW] line
+                # through handler._safe_webui_print() rather than logger.warning().
+                # The WebUI process starts the root logger without any handler, so
+                # logger.warning() calls are silently dropped (the [SLOW] line
+                # previously worked only on PIDs that happened to have a logger
+                # handler set up by an earlier run; today the line is invisible).
+                # _safe_webui_print writes to the systemd journal socket directly,
+                # same as the per-request ms line — which is why THAT line keeps
+                # working.
+                handler._safe_webui_print(
                     "[SLOW] session_id=%s get_session=%.1fms model_resolve=%.1fms "
-                    "compact=%.1fms redact=%.1fms json_write=%.1fms total=%.1fms",
-                    sid,
-                    (_t2-_t1)*1000, (_t3-_t2)*1000, (_t4-_t3)*1000,
-                    (_t5-_t4)*1000, (_t6-_t5)*1000, _total_ms,
+                    "compact=%.1fms redact=%.1fms json_write=%.1fms total=%.1fms" % (
+                        sid,
+                        (_t2-_t1)*1000, (_t3-_t2)*1000, (_t4-_t3)*1000,
+                        (_t5-_t4)*1000, (_t6-_t5)*1000, _total_ms,
+                    )
                 )
             if _diag: _diag.finish()
             return resp

@@ -106,11 +106,22 @@ class RequestDiagnostics:
         logger: logging.Logger | None = None,
         timeout_seconds: float | None = None,
         auto_start: bool = True,
+        print_fn: "callable | None" = None,
     ) -> None:
         self.request_id = uuid.uuid4().hex[:10]
         self.method = str(method or "-")
         self.path = str(path or "-").split("?", 1)[0]
         self.logger = logger or logging.getLogger(__name__)
+        # perf(webui/session-load-latency) tier2c: when the WebUI process
+        # boots without configuring a root-logger handler, logger.warning
+        # calls are silently dropped (the [SLOW] / "Slow WebUI request"
+        # lines have been invisible in production for some time — only the
+        # per-request ms line, which goes through _safe_webui_print, kept
+        # working). Callers that need the structured log to actually land
+        # in the systemd journal can pass print_fn=handler._safe_webui_print.
+        # When provided, finish() and _on_timeout() route through it
+        # instead of self.logger.warning.
+        self._print_fn = print_fn
         self.timeout_seconds = _slow_request_seconds() if timeout_seconds is None else max(0.0, float(timeout_seconds))
         self.started_monotonic = time.monotonic()
         self.started_wall = time.time()
@@ -134,6 +145,7 @@ class RequestDiagnostics:
         path: str,
         *,
         logger: logging.Logger | None = None,
+        print_fn: "callable | None" = None,
     ) -> "RequestDiagnostics | None":
         clean_path = str(path or "").split("?", 1)[0]
         if (method.upper(), clean_path) not in {
@@ -154,7 +166,7 @@ class RequestDiagnostics:
             ("GET", "/api/session"),
         }:
             return None
-        return cls(method, clean_path, logger=logger)
+        return cls(method, clean_path, logger=logger, print_fn=print_fn)
 
     def stage(self, name: str) -> None:
         now = time.monotonic()
@@ -171,6 +183,17 @@ class RequestDiagnostics:
             self._current_stage = clean
             self._current_stage_started = now
 
+    def _emit_slow(self, prefix: str, record: dict) -> None:
+        payload = f"{prefix} {json.dumps(record, sort_keys=True)}"
+        if self._print_fn is not None:
+            try:
+                self._print_fn(payload)
+            except Exception:
+                # print_fn is best-effort; never break a request thread.
+                pass
+        else:
+            self.logger.warning("%s", payload)
+
     def finish(self) -> None:
         record = None
         with self._lock:
@@ -183,10 +206,7 @@ class RequestDiagnostics:
         # bounded by the number of in-flight requests).
         _watchdog_unregister(self.request_id)
         if record and self.timeout_seconds > 0 and record["elapsed_ms"] >= self.timeout_seconds * 1000:
-            self.logger.warning(
-                "Slow WebUI request completed: %s",
-                json.dumps(record, sort_keys=True),
-            )
+            self._emit_slow("Slow WebUI request completed:", record)
 
     def _on_timeout(self) -> None:
         with self._lock:
@@ -194,10 +214,7 @@ class RequestDiagnostics:
                 return
             self._watchdog_logged = True
             record = self._build_record_locked(include_stacks=True)
-        self.logger.warning(
-            "Slow WebUI request still running: %s",
-            json.dumps(record, sort_keys=True),
-        )
+        self._emit_slow("Slow WebUI request still running:", record)
 
     def _build_record_locked(self, *, include_stacks: bool) -> dict[str, Any]:
         now = time.monotonic()
