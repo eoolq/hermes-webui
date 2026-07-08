@@ -1093,6 +1093,72 @@ def test_process_wakeup_pause_records_unset_route_provider_before_runtime_backfi
     assert saved_after.process_wakeup_pause["suppressed_count"] == 1
 
 
+def test_process_wakeup_pause_empty_provider_lane_probes_after_fingerprint_change(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    auth_json = hermes_home / "auth.json"
+    auth_json.write_text('{"credential_pool": {}}\n', encoding="utf-8")
+    monkeypatch.setattr(models, "_get_profile_home", lambda _profile: hermes_home)
+    monkeypatch.setitem(config.cfg, "model", {"default": "claude-sonnet-test"})
+    session = Session(
+        session_id="wakeup_pause_empty_provider_probe",
+        workspace=str(tmp_path),
+        model="claude-sonnet-test",
+        model_provider=None,
+    )
+    pause = models.record_process_wakeup_provider_unavailable_pause(
+        session,
+        classification="credential_pool_empty",
+        model="claude-sonnet-test",
+        provider=None,
+    )
+    assert pause is not None
+    assert pause["provider"] == ""
+    paused_fingerprint = pause["credential_state_fingerprint"]
+    session.save()
+    models.SESSIONS[session.session_id] = session
+
+    auth_json.write_text(
+        '{"credential_pool": {"test-provider": [{"id": "refilled-token"}]}}\n',
+        encoding="utf-8",
+    )
+    assert models.process_wakeup_credential_state_fingerprint(session) != paused_fingerprint
+
+    captured = {}
+
+    def _fake_start_run(s, **kwargs):
+        captured["source"] = kwargs.get("source")
+        captured["model"] = kwargs.get("model")
+        captured["model_provider"] = kwargs.get("model_provider")
+        return {"stream_id": "stream-empty-provider-probe", "session_id": s.session_id, "_status": 200}
+
+    _patch_process_wakeup_route(
+        monkeypatch,
+        tmp_path,
+        model="claude-sonnet-test",
+        provider=None,
+    )
+    monkeypatch.setattr(routes, "provider_has_usable_credential", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(routes, "_start_run", _fake_start_run)
+
+    response = routes.start_session_turn(
+        session.session_id,
+        "[IMPORTANT: Background process completed after empty-provider credential change.]",
+        source="process_wakeup",
+    )
+
+    assert response["_status"] == 200
+    assert response["stream_id"] == "stream-empty-provider-probe"
+    assert captured == {
+        "source": "process_wakeup",
+        "model": "claude-sonnet-test",
+        "model_provider": None,
+    }
+    saved = Session.load(session.session_id)
+    assert saved is not None
+    assert saved.process_wakeup_pause == {}
+
+
 def test_stale_credential_empty_process_wakeup_still_records_pause(tmp_path):
     session = Session(
         session_id="wakeup_pause_stale",

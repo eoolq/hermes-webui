@@ -19860,9 +19860,17 @@ def _process_wakeup_revalidation_provider(model, provider) -> str:
     return str(candidate or "").strip()
 
 
-def _process_wakeup_provider_has_usable_credential(session, *, model, provider) -> bool:
+def _process_wakeup_provider_has_usable_credential(
+    session,
+    *,
+    model,
+    provider,
+    provider_id: str | None = None,
+) -> bool:
     """Check paused-lane credential recovery in the owning session profile."""
-    provider_id = _process_wakeup_revalidation_provider(model, provider)
+    provider_id = str(
+        provider_id or _process_wakeup_revalidation_provider(model, provider) or ""
+    ).strip()
     if not provider_id:
         return False
     profile_name = str(getattr(session, "profile", "") or "").strip()
@@ -19986,11 +19994,16 @@ def start_session_turn(
             classification='credential_pool_empty',
         ):
             _credential_recovered = False
+            _credential_revalidation_provider = _process_wakeup_revalidation_provider(
+                model,
+                model_provider,
+            )
             try:
                 _credential_recovered = _process_wakeup_provider_has_usable_credential(
                     s,
                     model=model,
                     provider=model_provider,
+                    provider_id=_credential_revalidation_provider,
                 )
             except Exception:
                 logger.debug(
@@ -19998,7 +20011,11 @@ def start_session_turn(
                     session_id,
                     exc_info=True,
                 )
-            if _credential_recovered:
+            _allow_empty_provider_probe = (
+                _credential_state_changed
+                and not _credential_revalidation_provider
+            )
+            if _credential_recovered or _allow_empty_provider_probe:
                 _recovery_reason = (
                     'credential_state_changed'
                     if _credential_state_changed
