@@ -13631,6 +13631,13 @@ def handle_post(handler, parsed) -> bool:
         # GET ?session_id=X  → return current draft
         # POST body          → save draft { session_id, text?, files? }
         # HTTP method is in handler.command (e.g. "POST", "GET"), parsed has no .method
+        import time as _draft_time
+        _draft_t0 = _draft_time.monotonic()
+        _draft_stages = []
+
+        def _draft_mark(name):
+            _draft_stages.append((name, _draft_time.monotonic()))
+        _draft_mark("enter")
         if handler.command == "GET":
             query = parse_qs(parsed.query)
             sid = query.get("session_id", [""])[0] if parsed.query else ""
@@ -13670,8 +13677,10 @@ def handle_post(handler, parsed) -> bool:
             s = get_session(sid)
         except KeyError:
             return bad(handler, "Session not found", 404)
+        _draft_mark("after_get_session")
         unchanged = False
         with _get_session_agent_lock(sid):
+            _draft_mark("acquired_lock")
             current_draft = dict(getattr(s, "composer_draft", {}) or {})
             next_draft = dict(current_draft)
             if text is not None:
@@ -13687,12 +13696,28 @@ def handle_post(handler, parsed) -> bool:
                 # here makes the active-session external-refresh poll force-reload the
                 # current chat every few seconds while the user is typing, and that
                 # delayed reload can restore an older draft over newer local input.
+                _draft_mark("before_save")
                 s.save(touch_updated_at=False, skip_index=True)
+                _draft_mark("after_save")
                 saved_draft = s.composer_draft
+        _draft_mark("released_lock")
         payload = {"ok": True, "draft": saved_draft}
         if unchanged:
             payload["unchanged"] = True
+        _draft_mark("before_json")
         j(handler, payload)
+        _draft_mark("after_json")
+        _draft_stages.append(("end", _draft_time.monotonic()))
+        if _draft_stages[-1][1] - _draft_t0 > 0.2:
+            parts = " ".join(
+                f"{n}={((t - prev[1]) * 1000):.1f}ms"
+                for (n, t), prev in zip(_draft_stages[1:], _draft_stages[:-1])
+            )
+            logger.warning(
+                "[SLOW] /api/session/draft total=%.1fms stages: %s",
+                (_draft_stages[-1][1] - _draft_t0) * 1000,
+                parts,
+            )
         return True
 
     if parsed.path == "/api/session/update":
