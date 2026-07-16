@@ -27,6 +27,8 @@
 
 ### Performance
 
+- **Profile switches no longer re-run the expensive provider probe every time.** `GET /api/providers` ran a full per-provider probe on every call, so switching profiles (or any UI that re-reads providers) repeatedly paid that cost. The response is now cached for a short TTL (30s), keyed by the active Hermes home plus `.env` mtime, `config.yaml` mtime, and a config fingerprint — so it's strictly per-profile (one profile can never see another's cached provider view) and busts immediately on a profile switch or a credential/config edit. Explicit key and OAuth credential changes invalidate the cache right away; cached values are deep-copied so callers can't mutate the shared entry. Thanks @SeanWit. (#6013, #6010)
+
 - **Faster session reconciliation for large histories.** When the WebUI reconciles a session against the agent's `state.db`, it now uses a cheap prefix-count check to skip the expensive full identity-key materialization whenever the two prefixes provably can't match — falling back to the full comparison whenever a match can't be ruled out (null timestamps, equal counts, ties, or a locked/unreadable db all take the safe full path). No change to which sessions or messages are shown. Thanks @Isla-Liu. (#6014)
 
 - **Send-to-first-token latency (TTFT) is now measured.** Each streamed turn records how long it took from send to the first visible token (`ttft_ms`), surfaced in metering stats and as a `_firstTokenMs` diagnostic on the message. Measurement-only — computed once on the first token with no added latency on the streaming hot path, and existing token/usage/cost metering is unchanged. Thanks @rodboev. (#6042, #6006)
