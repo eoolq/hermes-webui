@@ -109,7 +109,11 @@ def test_initial_non_git_source_preserves_supported_runtime(monkeypatch):
     from api import agent_runtime
 
     monkeypatch.setattr(agent_runtime, "_AGENT_REVISION", None)
-    monkeypatch.setattr(agent_runtime, "_read_agent_revision", lambda _path: None)
+    monkeypatch.setattr(
+        agent_runtime,
+        "_read_agent_revision",
+        lambda _path, **_kwargs: None,
+    )
 
     agent_runtime.ensure_agent_runtime_current()
 
@@ -134,11 +138,13 @@ def test_untracked_loaded_module_inside_outer_git_repo_is_non_git(
     loaded_module.__file__ = str(module_file)
     monkeypatch.setitem(sys.modules, "run_agent", loaded_module)
     monkeypatch.setattr(agent_runtime, "_AGENT_SOURCE_DIR", None)
+    monkeypatch.setattr(agent_runtime, "_AGENT_MODULE_PATH", None)
     monkeypatch.setattr(agent_runtime, "_AGENT_REVISION", None)
 
     agent_runtime._capture_loaded_agent_revision()
 
     assert agent_runtime._AGENT_SOURCE_DIR == module_dir.resolve()
+    assert agent_runtime._AGENT_MODULE_PATH == module_file.resolve()
     assert agent_runtime._AGENT_REVISION is None
 
     (outer_repo / "tracked.txt").write_text("unrelated change\n", encoding="utf-8")
@@ -168,11 +174,13 @@ def test_untracked_module_pathspec_metacharacters_are_literal(monkeypatch, tmp_p
     loaded_module.__file__ = str(module_file)
     monkeypatch.setitem(sys.modules, "run_agent", loaded_module)
     monkeypatch.setattr(agent_runtime, "_AGENT_SOURCE_DIR", None)
+    monkeypatch.setattr(agent_runtime, "_AGENT_MODULE_PATH", None)
     monkeypatch.setattr(agent_runtime, "_AGENT_REVISION", None)
 
     agent_runtime._capture_loaded_agent_revision()
 
     assert agent_runtime._AGENT_SOURCE_DIR == untracked_dir.resolve()
+    assert agent_runtime._AGENT_MODULE_PATH == module_file.resolve()
     assert agent_runtime._AGENT_REVISION is None
 
 
@@ -197,11 +205,13 @@ def test_revision_identity_comes_from_loaded_agent_module(monkeypatch, tmp_path:
     monkeypatch.setitem(sys.modules, "run_agent", loaded_module)
     monkeypatch.setattr(agent_runtime, "_AGENT_DIR", configured_dir)
     monkeypatch.setattr(agent_runtime, "_AGENT_SOURCE_DIR", None)
+    monkeypatch.setattr(agent_runtime, "_AGENT_MODULE_PATH", None)
     monkeypatch.setattr(agent_runtime, "_AGENT_REVISION", None)
 
     agent_runtime._capture_loaded_agent_revision()
 
     assert agent_runtime._AGENT_SOURCE_DIR == loaded_dir.resolve()
+    assert agent_runtime._AGENT_MODULE_PATH == (loaded_dir / "run_agent.py").resolve()
     assert agent_runtime._AGENT_REVISION == _git(loaded_dir, "rev-parse", "HEAD")
 
 
@@ -210,7 +220,11 @@ def test_known_revision_becoming_unreadable_fails_closed(monkeypatch):
     from api import agent_runtime
 
     monkeypatch.setattr(agent_runtime, "_AGENT_REVISION", "known-revision")
-    monkeypatch.setattr(agent_runtime, "_read_agent_revision", lambda _path: None)
+    monkeypatch.setattr(
+        agent_runtime,
+        "_read_agent_revision",
+        lambda _path, **_kwargs: None,
+    )
 
     with pytest.raises(agent_runtime.AgentRuntimeChangedError):
         agent_runtime.ensure_agent_runtime_current()
@@ -227,14 +241,53 @@ def test_import_recapture_cannot_downgrade_known_revision(monkeypatch, tmp_path:
     loaded_module.__dict__["AIAgent"] = type("AIAgent", (), {})
     monkeypatch.setitem(sys.modules, "run_agent", loaded_module)
     monkeypatch.setattr(agent_runtime, "_AGENT_SOURCE_DIR", source_dir.resolve())
+    monkeypatch.setattr(agent_runtime, "_AGENT_MODULE_PATH", source_dir / "run_agent.py")
     monkeypatch.setattr(agent_runtime, "_AGENT_REVISION", "known-revision")
     revisions = iter(("known-revision", None))
-    monkeypatch.setattr(agent_runtime, "_read_agent_revision", lambda _path: next(revisions))
+    monkeypatch.setattr(
+        agent_runtime,
+        "_read_agent_revision",
+        lambda _path, **_kwargs: next(revisions),
+    )
 
     with pytest.raises(agent_runtime.AgentRuntimeChangedError):
         agent_runtime.require_ai_agent_class()
 
     assert agent_runtime._AGENT_REVISION == "known-revision"
+
+
+def test_in_memory_agent_swap_does_not_mimic_source_revision_change(
+    monkeypatch, tmp_path: Path
+):
+    """Only the bound checkout revision, not ``sys.modules`` swaps, defines staleness."""
+    from api import agent_runtime
+
+    agent_dir = tmp_path / "loaded-agent"
+    agent_dir.mkdir()
+    module_file = agent_dir / "run_agent.py"
+    module_file.write_text("class AIAgent: pass\n", encoding="utf-8")
+    _git(agent_dir, "init", "-q")
+    _git(agent_dir, "add", "run_agent.py")
+    _git(agent_dir, "commit", "-qm", "loaded agent")
+
+    loaded_module = types.ModuleType("run_agent")
+    loaded_module.__file__ = str(module_file)
+    loaded_module.__dict__["AIAgent"] = type("LoadedAgent", (), {})
+    monkeypatch.setitem(sys.modules, "run_agent", loaded_module)
+    monkeypatch.setattr(agent_runtime, "_AGENT_SOURCE_DIR", None)
+    monkeypatch.setattr(agent_runtime, "_AGENT_MODULE_PATH", None)
+    monkeypatch.setattr(agent_runtime, "_AGENT_REVISION", None)
+    agent_runtime._capture_loaded_agent_revision()
+
+    replacement_class = type("ReplacementAgent", (), {})
+    replacement_module = types.ModuleType("run_agent")
+    replacement_module.__dict__["AIAgent"] = replacement_class
+    monkeypatch.setitem(sys.modules, "run_agent", replacement_module)
+
+    assert agent_runtime.require_ai_agent_class() is replacement_class
+    assert agent_runtime._AGENT_SOURCE_DIR == agent_dir.resolve()
+    assert agent_runtime._AGENT_MODULE_PATH == module_file.resolve()
+    assert agent_runtime._AGENT_REVISION == _git(agent_dir, "rev-parse", "HEAD")
 
 
 def test_runner_local_bypasses_webui_agent_barrier(monkeypatch):

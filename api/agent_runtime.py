@@ -23,18 +23,26 @@ _RESTART_MESSAGE = (
 )
 
 
-def _read_agent_revision(agent_dir: Path | None) -> str | None:
+def _read_agent_revision(
+    agent_dir: Path | None,
+    *,
+    module_path: Path | None = None,
+) -> str | None:
     """Return the loaded Agent checkout HEAD, or ``None`` if it is not tracked."""
     if agent_dir is None:
         return None
 
-    module = sys.modules.get("run_agent")
-    module_file = getattr(module, "__file__", None)
-    if not module_file:
-        return None
+    if module_path is None:
+        module = sys.modules.get("run_agent")
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            return None
+        try:
+            module_path = Path(module_file).resolve()
+        except (OSError, RuntimeError, TypeError):
+            return None
 
     try:
-        module_path = Path(module_file).resolve()
         worktree_result = subprocess.run(
             ["git", "-C", str(agent_dir), "rev-parse", "--show-toplevel"],
             check=False,
@@ -79,6 +87,7 @@ def _read_agent_revision(agent_dir: Path | None) -> str | None:
 
 
 _AGENT_SOURCE_DIR: Path | None = None
+_AGENT_MODULE_PATH: Path | None = None
 _AGENT_REVISION: str | None = None
 _AIAgent = None
 _RUNTIME_LOCK = threading.Lock()
@@ -88,33 +97,34 @@ class AgentRuntimeChangedError(RuntimeError):
     """Raised when the loaded Agent runtime no longer matches its source tree."""
 
 
-def _loaded_agent_source_dir() -> Path | None:
-    """Return the source directory that actually supplied ``run_agent``."""
+def _loaded_agent_source_identity() -> tuple[Path, Path] | None:
+    """Return the source directory and file that supplied ``run_agent``."""
     module = sys.modules.get("run_agent")
     module_file = getattr(module, "__file__", None)
     if not module_file:
         return None
     try:
-        return Path(module_file).resolve().parent
+        module_path = Path(module_file).resolve()
+        return module_path.parent, module_path
     except (OSError, RuntimeError, TypeError):
         return None
 
 
 def _capture_loaded_agent_revision() -> None:
     """Bind the guard to the checkout that supplied the loaded Agent module."""
-    global _AGENT_SOURCE_DIR, _AGENT_REVISION
+    global _AGENT_SOURCE_DIR, _AGENT_MODULE_PATH, _AGENT_REVISION
 
-    source_dir = _loaded_agent_source_dir()
-    if source_dir is None:
-        return
-    current_revision = _read_agent_revision(source_dir)
-    if _AGENT_SOURCE_DIR is not None and source_dir != _AGENT_SOURCE_DIR:
-        raise AgentRuntimeChangedError(_RESTART_MESSAGE)
     if _AGENT_REVISION is not None:
-        if current_revision != _AGENT_REVISION:
-            raise AgentRuntimeChangedError(_RESTART_MESSAGE)
+        ensure_agent_runtime_current()
         return
+
+    identity = _loaded_agent_source_identity()
+    if identity is None:
+        return
+    source_dir, module_path = identity
+    current_revision = _read_agent_revision(source_dir, module_path=module_path)
     _AGENT_SOURCE_DIR = source_dir
+    _AGENT_MODULE_PATH = module_path
     _AGENT_REVISION = current_revision
 
 
@@ -122,7 +132,10 @@ def ensure_agent_runtime_current() -> None:
     """Reject a known Git checkout change instead of mixing Python modules."""
     if _AGENT_REVISION is None:
         return
-    if _read_agent_revision(_AGENT_SOURCE_DIR) != _AGENT_REVISION:
+    if (
+        _read_agent_revision(_AGENT_SOURCE_DIR, module_path=_AGENT_MODULE_PATH)
+        != _AGENT_REVISION
+    ):
         raise AgentRuntimeChangedError(_RESTART_MESSAGE)
 
 
